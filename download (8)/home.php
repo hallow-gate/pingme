@@ -1,0 +1,1897 @@
+<?php
+require_once 'includes/config.php';
+require_once 'includes/functions.php';
+require_once 'includes/csrf.php';
+
+if (!isLoggedIn()) {
+    header('Location: login.php');
+    exit;
+}
+
+updateLastActive($pdo, $_SESSION['user_id']);
+
+$active_tab = $_GET['tab'] ?? 'messages';
+$user = getUserById($pdo, $_SESSION['user_id']);
+$csrf_token = csrf_token();
+
+// Get notification counts
+function getNotificationCounts($pdo, $user_id) {
+    $stmt = $pdo->prepare("SELECT COUNT(*) as count FROM friends WHERE friend_id = ? AND status = 'pending'");
+    $stmt->execute([$user_id]);
+    $friend_requests = $stmt->fetch()['count'];
+    
+    $stmt = $pdo->prepare("
+        SELECT COUNT(DISTINCT m.id) as count 
+        FROM messages m
+        JOIN conversations c ON m.conversation_id = c.id
+        WHERE (c.user1_id = ? OR c.user2_id = ?) 
+        AND m.sender_id != ? 
+        AND m.is_read = 0
+    ");
+    $stmt->execute([$user_id, $user_id, $user_id]);
+    $unread_messages = $stmt->fetch()['count'];
+    
+    return [
+        'friend_requests' => $friend_requests,
+        'unread_messages' => $unread_messages,
+        'total' => $friend_requests + $unread_messages
+    ];
+}
+
+$notifications = getNotificationCounts($pdo, $_SESSION['user_id']);
+?>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <meta name="csrf-token" content="<?= $csrf_token ?>">
+    <title>PingMe - <?= ucfirst($active_tab) ?></title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,300;14..32,400;14..32,500;14..32,600;14..32,700;14..32,800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css">
+    <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
+    <!-- manifest for mobile -->
+<link rel="manifest" href="/manifest.json">
+
+<!-- theme color for mobile -->
+<meta name="theme-color" content="#4CAF50">
+
+<!-- For iOS -->
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="SocialApp">
+<link rel="apple-touch-icon" href="/icon-192x192.png">
+    <style>
+/* ========================================
+   PINGME - PREMIUM UI DESIGN
+   ======================================== */
+
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+html, body {
+    height: 100%;
+    overflow: hidden; /* prevent body scroll — app handles its own scroll */
+}
+
+body {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    background: radial-gradient(circle at 0% 0%, #0f111a 0%, #0a0c15 100%);
+    color: #e8edf5;
+    min-height: 100vh;
+    overflow-x: hidden;
+}
+
+/* Custom Scrollbar */
+::-webkit-scrollbar { width: 5px; height: 5px; }
+::-webkit-scrollbar-track { background: rgba(255,255,255,0.03); border-radius: 10px; }
+::-webkit-scrollbar-thumb { background: linear-gradient(135deg, #3b82f6, #8b5cf6); border-radius: 10px; }
+::-webkit-scrollbar-thumb:hover { background: linear-gradient(135deg, #60a5fa, #a78bfa); }
+
+/* ========================================
+   APP SHELL — full viewport, no scroll on body
+   ======================================== */
+.app-container {
+    max-width: 500px;
+    margin: 0 auto;
+    height: 100vh;
+    height: 100dvh; /* dynamic viewport for mobile */
+    display: flex;
+    flex-direction: column;
+    background: rgba(10, 12, 21, 0.98);
+    position: relative;
+    overflow: hidden;
+    box-shadow: 0 0 50px rgba(0,0,0,0.5);
+}
+
+/* ========================================
+   FIXED TOP BAR — notification bell area
+   ======================================== */
+.top-bar {
+    position: relative;
+    flex-shrink: 0;
+    height: 64px;
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    padding: 0 16px;
+    z-index: 100;
+}
+
+/* ========================================
+   SCROLLABLE CONTENT AREA
+   ======================================== */
+.main-content {
+    flex: 1;
+    overflow-y: auto;
+    overflow-x: hidden;
+    padding: 0 12px 16px;
+    -webkit-overflow-scrolling: touch;
+    /* Custom scrollbar */
+    scrollbar-width: thin;
+}
+
+/* Page headers inside scroll area */
+.page-header {
+    padding: 4px 4px 20px;
+}
+
+.page-header h2 {
+    font-size: 28px;
+    font-weight: 800;
+    background: linear-gradient(135deg, #f0f4fa, #9ca3af);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+    letter-spacing: -0.5px;
+}
+
+/* ========================================
+   BOTTOM NAVIGATION — always fixed at bottom, WhatsApp-style
+   ======================================== */
+.bottom-nav {
+    flex-shrink: 0;
+    width: 100%;
+    background: rgba(13, 16, 28, 0.97);
+    backdrop-filter: blur(24px);
+    -webkit-backdrop-filter: blur(24px);
+    border-top: 1px solid rgba(255,255,255,0.06);
+    display: flex;
+    justify-content: space-around;
+    align-items: stretch;
+    padding: 8px 4px;
+    padding-bottom: calc(8px + env(safe-area-inset-bottom, 0px));
+    z-index: 200;
+    /* NO position:fixed — it's part of the flex column, always at bottom */
+}
+
+/* Hide nav when in chat */
+.bottom-nav.hidden {
+    display: none;
+}
+
+.nav-item {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    flex: 1;
+    gap: 4px;
+    text-decoration: none;
+    color: #5a6380;
+    font-size: 11px;
+    font-weight: 500;
+    letter-spacing: 0.2px;
+    padding: 6px 4px;
+    border-radius: 16px;
+    transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+    position: relative;
+    min-height: 56px;
+    cursor: pointer;
+}
+
+.nav-item i {
+    font-size: 22px;
+    transition: all 0.25s ease;
+    line-height: 1;
+}
+
+.nav-item span.nav-label {
+    font-size: 10px;
+    line-height: 1;
+    transition: all 0.2s ease;
+}
+
+.nav-item:hover {
+    color: #94a3b8;
+    background: rgba(255,255,255,0.04);
+}
+
+.nav-item.active {
+    color: #60a5fa;
+    background: rgba(59, 130, 246, 0.1);
+}
+
+.nav-item.active i {
+    transform: scale(1.1);
+    color: #60a5fa;
+    filter: drop-shadow(0 0 6px rgba(96,165,250,0.5));
+}
+
+.nav-item.active .nav-label {
+    color: #60a5fa;
+    font-weight: 600;
+}
+
+/* Active indicator dot */
+.nav-item.active::after {
+    content: '';
+    position: absolute;
+    bottom: 2px;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 4px;
+    height: 4px;
+    background: #3b82f6;
+    border-radius: 50%;
+    box-shadow: 0 0 6px #3b82f6;
+}
+
+.nav-badge {
+    position: absolute;
+    top: 4px;
+    right: calc(50% - 22px);
+    background: linear-gradient(135deg, #ef4444, #f97316);
+    color: white;
+    font-size: 9px;
+    font-weight: 700;
+    padding: 2px 5px;
+    border-radius: 30px;
+    min-width: 17px;
+    text-align: center;
+    box-shadow: 0 2px 8px rgba(239,68,68,0.4);
+    line-height: 1.4;
+}
+
+/* ========================================
+   NOTIFICATION BELL — inside top-bar
+   ======================================== */
+.notification-bell {
+    width: 44px;
+    height: 44px;
+    background: rgba(18, 22, 35, 0.9);
+    backdrop-filter: blur(20px);
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    border: 1px solid rgba(255,255,255,0.08);
+    transition: all 0.25s ease;
+    box-shadow: 0 4px 15px rgba(0,0,0,0.3);
+    position: relative;
+    flex-shrink: 0;
+}
+
+.notification-bell:hover {
+    background: rgba(59, 130, 246, 0.2);
+    transform: scale(1.05);
+    border-color: rgba(59, 130, 246, 0.4);
+}
+
+.notification-bell i {
+    font-size: 20px;
+    color: #cbd5e1;
+    transition: color 0.2s;
+}
+
+.notification-bell:hover i { color: #60a5fa; }
+
+.bell-badge {
+    position: absolute;
+    top: -3px;
+    right: -3px;
+    background: linear-gradient(135deg, #ef4444, #f97316);
+    color: white;
+    font-size: 10px;
+    font-weight: 700;
+    padding: 2px 5px;
+    border-radius: 30px;
+    min-width: 17px;
+    text-align: center;
+    box-shadow: 0 2px 10px rgba(239,68,68,0.5);
+    z-index: 5;
+    animation: pulse 2s infinite;
+    line-height: 1.4;
+}
+
+@keyframes pulse {
+    0%, 100% { transform: scale(1); }
+    50% { transform: scale(1.1); }
+}
+
+/* ========================================
+   NOTIFICATION DROPDOWN
+   ======================================== */
+.notification-dropdown {
+    position: absolute;
+    top: 60px;
+    right: 12px;
+    width: calc(100% - 24px);
+    max-width: 360px;
+    background: rgba(18, 22, 35, 0.99);
+    backdrop-filter: blur(24px);
+    -webkit-backdrop-filter: blur(24px);
+    border-radius: 20px;
+    border: 1px solid rgba(255,255,255,0.08);
+    box-shadow: 0 20px 50px rgba(0,0,0,0.5);
+    z-index: 300;
+    display: none;
+    max-height: 380px;
+    overflow-y: auto;
+}
+
+.notification-dropdown.show {
+    display: block;
+    animation: dropFade 0.2s ease;
+}
+
+@keyframes dropFade {
+    from { opacity: 0; transform: translateY(-8px) scale(0.98); }
+    to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+.notif-header {
+    padding: 16px 18px;
+    border-bottom: 1px solid rgba(255,255,255,0.07);
+    font-weight: 700;
+    font-size: 15px;
+    background: rgba(15,17,26,0.95);
+    border-radius: 20px 20px 0 0;
+    position: sticky;
+    top: 0;
+    z-index: 5;
+}
+
+.notif-header i { margin-right: 10px; color: #3b82f6; }
+
+.notif-section {
+    padding: 8px 16px;
+    background: rgba(10,12,21,0.9);
+    font-size: 10px;
+    font-weight: 700;
+    color: #8b5cf6;
+    text-transform: uppercase;
+    letter-spacing: 1.2px;
+}
+
+.notif-item {
+    padding: 13px 16px;
+    border-bottom: 1px solid rgba(255,255,255,0.04);
+    cursor: pointer;
+    transition: background 0.2s;
+}
+
+.notif-item:hover { background: rgba(59,130,246,0.08); }
+.notif-item.unread { background: rgba(59,130,246,0.06); border-left: 3px solid #3b82f6; }
+
+.notif-title { font-weight: 600; font-size: 14px; margin-bottom: 5px; }
+.notif-title i { margin-right: 7px; width: 18px; color: #3b82f6; }
+.notif-preview { font-size: 12px; color: #9ca3af; margin-bottom: 5px; }
+.notif-time { font-size: 11px; color: #6b7280; }
+
+.friend-actions { display: flex; gap: 10px; margin-top: 9px; }
+.friend-actions button {
+    padding: 6px 14px;
+    border: none;
+    border-radius: 30px;
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.accept-btn { background: linear-gradient(135deg, #22c55e, #16a34a); color: white; }
+.accept-btn:hover { transform: translateY(-1px); box-shadow: 0 2px 8px rgba(34,197,94,0.4); }
+.decline-btn { background: rgba(239,68,68,0.15); color: #f87171; border: 1px solid rgba(239,68,68,0.3); }
+
+.notif-empty { text-align: center; padding: 40px 20px; color: #6b7280; }
+.notif-empty i { font-size: 40px; margin-bottom: 10px; display: block; opacity: 0.4; }
+
+/* ========================================
+   CHAT LIST
+   ======================================== */
+.chat-list { display: flex; flex-direction: column; gap: 10px; }
+
+.chat-item {
+    background: linear-gradient(135deg, rgba(26,30,45,0.8), rgba(22,26,40,0.9));
+    border-radius: 20px;
+    padding: 14px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    cursor: pointer;
+    transition: all 0.22s ease;
+    border: 1px solid rgba(255,255,255,0.05);
+    position: relative;
+}
+
+.chat-item:hover {
+    transform: translateX(3px);
+    border-color: rgba(59,130,246,0.25);
+    background: linear-gradient(135deg, rgba(32,36,55,0.9), rgba(26,30,45,0.95));
+}
+
+.chat-avatar {
+    width: 52px; height: 52px;
+    background: CornflowerBlue;
+    border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 26px;
+    box-shadow: 0 4px 12px rgba(59,130,246,0.25);
+    flex-shrink: 0;
+}
+
+.chat-info { flex: 1; min-width: 0; }
+
+.chat-name {
+    font-weight: 600;
+    font-size: 15px;
+    margin-bottom: 4px;
+    display: flex;
+    align-items: center;
+    gap: 7px;
+}
+
+.online-dot {
+    display: inline-block;
+    width: 7px; height: 7px;
+    background: #22c55e;
+    border-radius: 50%;
+    box-shadow: 0 0 5px #22c55e;
+    flex-shrink: 0;
+}
+
+.chat-preview {
+    font-size: 13px;
+    color: #9ca3af;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.chat-time { font-size: 11px; color: #6b7280; }
+
+.unread-count {
+    background: linear-gradient(135deg, #ef4444, #f97316);
+    color: white;
+    font-size: 10px;
+    font-weight: 700;
+    padding: 3px 7px;
+    border-radius: 30px;
+    min-width: 20px;
+    text-align: center;
+    position: absolute;
+    right: 14px;
+    top: 50%;
+    transform: translateY(-50%);
+}
+
+/* ========================================
+   CHAT VIEW — full height flex layout
+   ======================================== */
+/* The chat-view takes over the main-content scrollable area entirely */
+#chat-view {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    padding: 0;
+    overflow: hidden;
+}
+
+.chat-header {
+    background: rgba(18, 22, 35, 0.98);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+    padding: 12px 14px;
+    border-radius: 0 0 24px 24px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    border-bottom: 1px solid rgba(255,255,255,0.05);
+    flex-shrink: 0;
+    z-index: 10;
+}
+
+.back-btn {
+    background: rgba(59,130,246,0.12);
+    border: none;
+    width: 40px; height: 40px;
+    border-radius: 50%;
+    color: #60a5fa;
+    font-size: 17px;
+    cursor: pointer;
+    transition: all 0.2s;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+}
+
+.back-btn:hover { background: rgba(59,130,246,0.25); transform: scale(1.05); }
+
+.chat-user-info { cursor: pointer; flex: 1; min-width: 0; }
+.chat-user-name { font-weight: 700; font-size: 16px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chat-user-status { font-size: 12px; color: #9ca3af; }
+
+/* Messages scroll area */
+.messages-area {
+    flex: 1;
+    overflow-y: auto;
+    padding: 14px 14px 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    -webkit-overflow-scrolling: touch;
+}
+
+/* ========================================
+   MESSAGE BUBBLES + READ RECEIPTS
+   ======================================== */
+.message { display: flex; align-items: flex-end; }
+.message.sent { justify-content: flex-end; }
+.message.received { justify-content: flex-start; }
+
+.message-bubble {
+    max-width: 78%;
+    padding: 10px 14px;
+    border-radius: 20px;
+    font-size: 14px;
+    line-height: 1.45;
+    word-wrap: break-word;
+    position: relative;
+}
+
+.message.sent .message-bubble {
+    background: linear-gradient(135deg, #3b82f6, #2563eb);
+    color: white;
+    border-bottom-right-radius: 5px;
+    box-shadow: 0 2px 8px rgba(59,130,246,0.28);
+}
+
+.message.received .message-bubble {
+    background: rgba(38,42,60,0.95);
+    color: #e8edf5;
+    border-bottom-left-radius: 5px;
+    border: 1px solid rgba(255,255,255,0.05);
+}
+
+/* Message meta row: time + read receipt */
+.message-meta {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 4px;
+    margin-top: 4px;
+}
+
+.message-time {
+    font-size: 10px;
+    opacity: 0.65;
+    line-height: 1;
+}
+
+/* Read receipt checkmarks */
+.read-receipt {
+    display: inline-flex;
+    align-items: center;
+    font-size: 12px;
+    line-height: 1;
+}
+
+/* Single grey check = sent/not seen */
+.read-receipt.sent-only {
+    color: rgba(255,255,255,0.45);
+}
+
+/* Double blue checks = seen */
+.read-receipt.seen {
+    color: #60a5fa;
+}
+
+.read-receipt .check {
+    display: inline-block;
+}
+
+/* Second check overlaps slightly */
+.read-receipt .check + .check {
+    margin-left: -4px;
+}
+
+/* Typing Indicator */
+.typing-indicator {
+    padding: 8px 14px;
+    font-size: 12px;
+    color: #9ca3af;
+    display: none;
+    align-items: center;
+    gap: 8px;
+    flex-shrink: 0;
+}
+
+.typing-indicator.active { display: flex; }
+.typing-dots { display: flex; gap: 4px; }
+.typing-dots span {
+    width: 6px; height: 6px;
+    background: #3b82f6;
+    border-radius: 50%;
+    animation: typingWave 1.4s infinite;
+}
+.typing-dots span:nth-child(2) { animation-delay: 0.2s; }
+.typing-dots span:nth-child(3) { animation-delay: 0.4s; }
+
+@keyframes typingWave {
+    0%, 60%, 100% { transform: translateY(0); opacity: 0.4; }
+    30% { transform: translateY(-4px); opacity: 1; }
+}
+
+/* ========================================
+   CHAT INPUT — always at bottom of chat-view
+   ======================================== */
+.chat-input-wrap {
+    flex-shrink: 0;
+    padding: 8px 12px;
+    padding-bottom: calc(8px + env(safe-area-inset-bottom, 0px));
+    background: rgba(13,16,28,0.97);
+    border-top: 1px solid rgba(255,255,255,0.05);
+}
+
+.chat-input {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    background: rgba(26,30,45,0.95);
+    backdrop-filter: blur(20px);
+    border-radius: 60px;
+    padding: 6px 6px 6px 16px;
+    border: 1px solid rgba(255,255,255,0.06);
+}
+
+.chat-input input {
+    flex: 1;
+    padding: 10px 0;
+    border: none;
+    background: transparent;
+    color: #e8edf5;
+    font-size: 15px;
+    font-family: 'Inter', sans-serif;
+    min-width: 0;
+}
+
+.chat-input input:focus { outline: none; }
+.chat-input input::placeholder { color: #4b5568; }
+
+.send-btn {
+    background: linear-gradient(135deg, #3b82f6, #8b5cf6);
+    border: none;
+    width: 46px; height: 46px;
+    border-radius: 50%;
+    color: white;
+    cursor: pointer;
+    transition: all 0.22s ease;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    box-shadow: 0 2px 8px rgba(59,130,246,0.3);
+}
+
+.send-btn:hover { transform: scale(1.06); box-shadow: 0 4px 14px rgba(59,130,246,0.5); }
+.send-btn:active { transform: scale(0.94); }
+.send-btn i { font-size: 17px; }
+
+/* ========================================
+   EXPLORE GRID
+   ======================================== */
+.explore-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 12px;
+}
+
+.explore-card {
+    background: linear-gradient(135deg, rgba(26,30,45,0.9), rgba(22,26,40,0.95));
+    border-radius: 22px;
+    padding: 16px 10px;
+    text-align: center;
+    cursor: pointer;
+    transition: all 0.22s ease;
+    border: 1px solid rgba(255,255,255,0.05);
+}
+
+.explore-card:hover {
+    transform: translateY(-3px);
+    border-color: rgba(59,130,246,0.3);
+    box-shadow: 0 10px 24px rgba(0,0,0,0.3);
+}
+
+.explore-avatar {
+    width: 66px; height: 66px;
+    background: CornflowerBlue;
+    border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 30px;
+    margin: 0 auto 10px;
+    box-shadow: 0 4px 14px rgba(59,130,246,0.25);
+}
+
+.explore-name { font-weight: 700; font-size: 13px; margin-bottom: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.explore-age { font-size: 11px; color: #9ca3af; margin-bottom: 6px; }
+.explore-bio { font-size: 11px; color: #6b7280; margin-bottom: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.explore-actions { display: flex; gap: 7px; justify-content: center; }
+.explore-actions button {
+    padding: 6px 13px;
+    border: none;
+    border-radius: 30px;
+    font-size: 11px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.msg-btn { background: linear-gradient(135deg, #3b82f6, #2563eb); color: white; }
+.add-btn { background: linear-gradient(135deg, #22c55e, #16a34a); color: white; }
+.pending-btn { background: rgba(100,116,139,0.3); color: #94a3b8; cursor: not-allowed; }
+
+/* ========================================
+   FEED POSTS
+   ======================================== */
+.create-post-card {
+    background: linear-gradient(135deg, rgba(26,30,45,0.9), rgba(22,26,40,0.95));
+    border-radius: 24px;
+    padding: 16px;
+    margin-bottom: 16px;
+    border: 1px solid rgba(255,255,255,0.05);
+}
+
+.create-post-card textarea {
+    width: 100%;
+    padding: 12px 14px;
+    border: none;
+    border-radius: 18px;
+    background: rgba(15,17,26,0.9);
+    color: #e8edf5;
+    font-family: 'Inter', sans-serif;
+    resize: vertical;
+    margin-bottom: 12px;
+    font-size: 14px;
+}
+
+.create-post-card textarea:focus { outline: none; }
+
+.post-submit {
+    background: linear-gradient(135deg, #3b82f6, #8b5cf6);
+    color: white;
+    border: none;
+    padding: 11px 22px;
+    border-radius: 40px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s;
+    width: 100%;
+}
+
+.post-submit:hover { transform: translateY(-1px); box-shadow: 0 4px 14px rgba(59,130,246,0.4); }
+
+.feed-post {
+    background: linear-gradient(135deg, rgba(26,30,45,0.9), rgba(22,26,40,0.95));
+    border-radius: 24px;
+    padding: 16px;
+    margin-bottom: 14px;
+    border: 1px solid rgba(255,255,255,0.05);
+    transition: all 0.2s;
+}
+
+.feed-post:hover { border-color: rgba(59,130,246,0.15); }
+
+.post-header { display: flex; align-items: center; gap: 11px; margin-bottom: 12px; }
+
+.post-avatar {
+    width: 46px; height: 46px;
+    background: CornflowerBlue;
+    border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 22px;
+    flex-shrink: 0;
+}
+
+.post-author { font-weight: 700; font-size: 14px; }
+.post-time { font-size: 11px; color: #9ca3af; }
+.post-content { margin-bottom: 12px; line-height: 1.5; font-size: 14px; word-wrap: break-word; }
+
+.post-actions {
+    display: flex;
+    gap: 16px;
+    padding-top: 10px;
+    border-top: 1px solid rgba(255,255,255,0.05);
+}
+
+.reaction-btn, .comment-btn {
+    background: none;
+    border: none;
+    color: #9ca3af;
+    cursor: pointer;
+    font-size: 13px;
+    padding: 6px 12px;
+    border-radius: 30px;
+    transition: all 0.2s;
+    display: flex; align-items: center; gap: 5px;
+}
+
+.reaction-btn:hover, .comment-btn:hover { background: rgba(59,130,246,0.12); color: #60a5fa; }
+.reaction-btn.active { color: #ef4444; }
+
+.comments-section { margin-top: 12px; padding-top: 12px; border-top: 1px solid rgba(255,255,255,0.05); }
+.comment { font-size: 12px; padding: 7px 0; color: #cbd5e1; border-bottom: 1px solid rgba(255,255,255,0.03); }
+.comment strong { color: #e8edf5; font-weight: 600; }
+.comment-time { font-size: 10px; color: #6b7280; margin-left: 7px; }
+
+.view-all-comments { background: none; border: none; color: #60a5fa; cursor: pointer; font-size: 12px; padding: 7px 0; display: block; text-align: center; }
+.view-all-comments:hover { text-decoration: underline; }
+
+.comment-input-box { margin-top: 10px; display: flex; gap: 8px; }
+
+.comment-input {
+    flex: 1;
+    padding: 9px 13px;
+    border: none;
+    border-radius: 30px;
+    background: rgba(15,17,26,0.9);
+    color: #e8edf5;
+    font-size: 13px;
+}
+
+.comment-submit {
+    background: linear-gradient(135deg, #3b82f6, #8b5cf6);
+    border: none;
+    padding: 9px 18px;
+    border-radius: 30px;
+    color: white;
+    cursor: pointer;
+    font-weight: 500;
+}
+
+/* ========================================
+   PROFILE MODAL
+   ======================================== */
+.profile-modal {
+    display: none;
+    position: fixed;
+    z-index: 2000;
+    left: 0; top: 0;
+    width: 100%; height: 100%;
+    background: rgba(0,0,0,0.88);
+    backdrop-filter: blur(12px);
+    align-items: center;
+    justify-content: center;
+}
+
+.profile-modal.show { display: flex; animation: fadeIn 0.22s ease; }
+
+@keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+
+.modal-container {
+    background: linear-gradient(135deg, #1a1e2d, #121520);
+    width: 90%;
+    max-width: 440px;
+    max-height: 85vh;
+    border-radius: 36px;
+    overflow-y: auto;
+    border: 1px solid rgba(255,255,255,0.09);
+    box-shadow: 0 25px 50px rgba(0,0,0,0.5);
+    animation: slideUp 0.28s ease;
+}
+
+@keyframes slideUp { from { transform: translateY(24px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+
+.modal-header {
+    text-align: center;
+    padding: 28px 20px;
+    background: linear-gradient(135deg, rgba(59,130,246,0.08), rgba(139,92,246,0.04));
+    position: relative;
+}
+
+.modal-close {
+    position: absolute;
+    top: 14px; right: 14px;
+    width: 34px; height: 34px;
+    background: rgba(255,255,255,0.07);
+    border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.modal-close:hover { background: rgba(239,68,68,0.2); transform: rotate(90deg); }
+
+.modal-avatar {
+    width: 90px; height: 90px;
+    background: CornflowerBlue;
+    border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 44px;
+    margin: 0 auto 14px;
+    border: 3px solid rgba(59,130,246,0.45);
+}
+
+.modal-name { font-size: 22px; font-weight: 700; margin-bottom: 5px; }
+.modal-status { font-size: 12px; color: #9ca3af; }
+
+.modal-body { padding: 20px; }
+
+.profile-stats {
+    display: flex;
+    justify-content: space-around;
+    padding: 14px;
+    background: rgba(15,17,26,0.6);
+    border-radius: 24px;
+    margin-bottom: 20px;
+}
+
+.stat-item { text-align: center; }
+.stat-number { display: block; font-size: 20px; font-weight: 700; color: #3b82f6; }
+.stat-label { font-size: 11px; color: #9ca3af; }
+
+.info-row { display: flex; align-items: center; padding: 11px 0; border-bottom: 1px solid rgba(255,255,255,0.05); }
+.info-icon { width: 32px; color: #3b82f6; }
+.info-label { width: 75px; font-size: 12px; color: #9ca3af; }
+.info-value { flex: 1; font-size: 13px; font-weight: 500; }
+
+.modal-bio { background: rgba(15,17,26,0.6); padding: 14px; border-radius: 18px; margin: 16px 0; }
+.modal-bio strong { display: block; margin-bottom: 7px; color: #3b82f6; font-size: 12px; }
+.modal-bio p { font-size: 13px; line-height: 1.5; color: #cbd5e1; }
+
+.modal-actions { display: flex; gap: 10px; }
+
+.modal-btn {
+    flex: 1;
+    padding: 13px;
+    border: none;
+    border-radius: 36px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s;
+    font-size: 14px;
+}
+
+.modal-btn.primary { background: linear-gradient(135deg, #22c55e, #16a34a); color: white; }
+.modal-btn.secondary { background: linear-gradient(135deg, #3b82f6, #2563eb); color: white; }
+.modal-btn.disabled { background: rgba(100,116,139,0.3); color: #94a3b8; cursor: not-allowed; }
+
+/* ========================================
+   PROFILE PAGE
+   ======================================== */
+.profile-card {
+    background: linear-gradient(135deg, rgba(26,30,45,0.9), rgba(22,26,40,0.95));
+    border-radius: 28px;
+    padding: 24px;
+    text-align: center;
+    border: 1px solid rgba(255,255,255,0.05);
+}
+
+.profile-avatar-large {
+    width: 90px; height: 90px;
+    background: CornflowerBlue;
+    border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 44px;
+    margin: 0 auto 14px;
+}
+
+.profile-name { font-size: 22px; font-weight: 700; margin-bottom: 5px; }
+.profile-email { color: #9ca3af; font-size: 13px; margin-bottom: 18px; }
+
+.profile-bio { background: rgba(15,17,26,0.6); padding: 14px; border-radius: 18px; margin: 16px 0; text-align: left; }
+.profile-bio strong { display: block; margin-bottom: 7px; color: #3b82f6; font-size: 12px; }
+.profile-bio p { font-size: 13px; line-height: 1.5; color: #cbd5e1; word-wrap: break-word; }
+
+.profile-form { text-align: left; margin-top: 18px; }
+.profile-form label { display: block; margin-bottom: 7px; font-weight: 500; font-size: 13px; color: #9ca3af; }
+
+.profile-form input,
+.profile-form select,
+.profile-form textarea {
+    width: 100%;
+    padding: 11px 14px;
+    margin-bottom: 14px;
+    border: 1px solid rgba(255,255,255,0.09);
+    border-radius: 18px;
+    background: rgba(15,17,26,0.9);
+    color: #e8edf5;
+    font-family: 'Inter', sans-serif;
+    font-size: 14px;
+}
+
+.profile-form input:focus,
+.profile-form select:focus,
+.profile-form textarea:focus { outline: none; border-color: #3b82f6; }
+
+.checkbox-label { display: flex; align-items: center; gap: 10px; cursor: pointer; }
+.checkbox-label input { width: auto; margin: 0; }
+
+.save-btn {
+    width: 100%;
+    background: linear-gradient(135deg, #3b82f6, #8b5cf6);
+    color: white;
+    border: none;
+    padding: 13px;
+    border-radius: 36px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.save-btn:hover { transform: translateY(-2px); box-shadow: 0 4px 14px rgba(59,130,246,0.4); }
+
+.logout-btn {
+    display: inline-block;
+    margin-top: 18px;
+    padding: 11px 26px;
+    background: rgba(239,68,68,0.12);
+    color: #f87171;
+    text-decoration: none;
+    border-radius: 36px;
+    font-size: 13px;
+    font-weight: 500;
+    transition: all 0.2s;
+    border: 1px solid rgba(239,68,68,0.28);
+}
+
+.logout-btn:hover { background: rgba(239,68,68,0.22); }
+
+/* Search */
+.search-input {
+    width: 100%;
+    padding: 13px 16px;
+    border: 1px solid rgba(255,255,255,0.09);
+    border-radius: 60px;
+    background: rgba(15,17,26,0.9);
+    color: #e8edf5;
+    font-size: 14px;
+    margin-bottom: 16px;
+}
+
+.search-input:focus { outline: none; border-color: #3b82f6; }
+
+/* States */
+.empty-state { text-align: center; padding: 50px 20px; color: #6b7280; }
+.empty-state i { font-size: 44px; margin-bottom: 14px; opacity: 0.45; display: block; }
+.loader-text { text-align: center; padding: 18px; color: #6b7280; font-size: 13px; }
+
+/* ========================================
+   RESPONSIVE — MOBILE
+   ======================================== */
+@media (max-width: 480px) {
+    .nav-item i { font-size: 20px; }
+    .nav-item span.nav-label { font-size: 9px; }
+    .nav-item { min-height: 52px; }
+    
+    .notification-bell { width: 40px; height: 40px; }
+    .notification-bell i { font-size: 18px; }
+    
+    .message-bubble { max-width: 82%; font-size: 14px; }
+    
+    .chat-input input { font-size: 16px; } /* prevent zoom on iOS */
+    .send-btn { width: 44px; height: 44px; }
+    
+    .explore-grid { gap: 9px; }
+    .explore-card { padding: 13px 7px; }
+    .explore-avatar { width: 54px; height: 54px; font-size: 24px; }
+    
+    .modal-container { width: 95%; border-radius: 28px; }
+    .modal-avatar { width: 76px; height: 76px; font-size: 36px; }
+    .modal-name { font-size: 19px; }
+}
+
+/* Landscape mobile */
+@media (max-height: 500px) and (orientation: landscape) {
+    .messages-area { flex: 1; }
+    .bottom-nav { padding: 4px; }
+    .nav-item { min-height: 44px; }
+    .nav-item span.nav-label { display: none; }
+    .notification-dropdown { max-height: 220px; }
+}
+
+/* Touch - prevent double-tap zoom */
+@media (hover: none) and (pointer: coarse) {
+    .send-btn:active { transform: scale(0.94); }
+    .nav-item:active { opacity: 0.7; }
+}
+    </style>
+</head>
+<body>
+    <div class="app-container">
+
+        <!-- Profile Modal (outside scroll) -->
+        <div id="profileModal" class="profile-modal">
+            <div class="modal-container">
+                <div class="modal-header">
+                    <div class="modal-close" onclick="closeProfileModal()"><i class="fas fa-times"></i></div>
+                    <div class="modal-avatar" id="modalAvatar">👤</div>
+                    <div class="modal-name" id="modalName"></div>
+                    <div class="modal-status" id="modalStatus"></div>
+                </div>
+                <div class="modal-body">
+                    <div class="profile-stats" id="modalStats"></div>
+                    <div id="modalInfo"></div>
+                    <div class="modal-bio" id="modalBio"></div>
+                    <div class="modal-actions" id="modalActions"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- TOP BAR: notification bell (always visible, never scrolls) -->
+        <div class="top-bar" id="topBar">
+            <div class="notification-bell" id="notificationBtn">
+                <i class="fas fa-bell"></i>
+                <span class="bell-badge" id="notificationBadge" style="display: <?= $notifications['total'] > 0 ? 'flex' : 'none' ?>; align-items:center; justify-content:center;">
+                    <?= $notifications['total'] > 99 ? '99+' : $notifications['total'] ?>
+                </span>
+            </div>
+            <!-- Notification dropdown anchored here -->
+            <div class="notification-dropdown" id="notificationDropdown">
+                <div class="notif-header"><i class="fas fa-bell"></i> Notifications</div>
+                <div id="notificationList">
+                    <div class="notif-empty"><i class="fas fa-bell-slash"></i>Loading...</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- SCROLLABLE MAIN CONTENT -->
+        <div class="main-content" id="mainContent">
+
+            <!-- MESSAGES TAB -->
+            <?php if ($active_tab == 'messages'): ?>
+
+            <div id="conversations-view">
+                <div class="page-header"><h2>Messages</h2></div>
+                <div id="conversations-list" class="chat-list">
+                    <div class="loader-text">Loading conversations...</div>
+                </div>
+            </div>
+
+            <div id="chat-view" style="display: none;">
+                <div class="chat-header">
+                    <button onclick="closeChat()" class="back-btn"><i class="fas fa-arrow-left"></i></button>
+                    <div class="chat-user-info" onclick="viewProfileFromChat()">
+                        <div class="chat-user-name" id="chat-user-name"></div>
+                        <div class="chat-user-status" id="chat-user-status"></div>
+                    </div>
+                </div>
+                <div id="chat-messages" class="messages-area"></div>
+                <div class="typing-indicator" id="typingStatus">
+                    <i class="fas fa-keyboard"></i>
+                    <span>Typing</span>
+                    <div class="typing-dots"><span></span><span></span><span></span></div>
+                </div>
+                <div class="chat-input-wrap">
+                    <div class="chat-input">
+                        <input type="text" id="messageInput" placeholder="Message..." autocomplete="off">
+                        <button id="sendMsgBtn" class="send-btn"><i class="fas fa-paper-plane"></i></button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- EXPLORE TAB -->
+            <?php elseif ($active_tab == 'explore'): ?>
+            <div class="page-header"><h2>Discover</h2></div>
+            <input type="text" id="searchInput" placeholder="Search people..." class="search-input" onkeyup="searchUsers()">
+            <div id="exploreGrid" class="explore-grid"></div>
+            <div id="exploreLoader" class="loader-text">Scroll for more</div>
+
+            <!-- FEED TAB -->
+            <?php elseif ($active_tab == 'feed'): ?>
+            <div class="page-header"><h2>Feed</h2></div>
+            <div class="create-post-card">
+                <textarea id="newPost" rows="3" placeholder="What's on your mind?"></textarea>
+                <button id="postBtn" class="post-submit"><i class="fas fa-feather-alt"></i> Share Post</button>
+            </div>
+            <div id="feedContainer" class="feed-container"></div>
+            <div id="feedLoader" class="loader-text">Scroll for more</div>
+
+            <!-- PROFILE TAB -->
+            <?php else: ?>
+            <div class="page-header"><h2>Profile</h2></div>
+            <div class="profile-card">
+                <div class="profile-avatar-large"><?= getAvatar($user['gender']) ?></div>
+                <div class="profile-name"><?= escape($user['full_name']) ?></div>
+                <div class="profile-email"><?= escape($user['email']) ?></div>
+                <div class="profile-bio">
+                    <strong><i class="fas fa-quote-left"></i> About</strong>
+                    <p><?= nl2br(escape($user['bio'] ?? 'No bio yet. Tap edit to add one!')) ?></p>
+                </div>
+                <form id="profileForm" class="profile-form" method="POST" action="api/update_profile.php">
+                    <input type="hidden" name="csrf_token" value="<?= $csrf_token ?>">
+                    <label>Edit Bio</label>
+                    <textarea name="bio" rows="3" placeholder="Tell us about yourself..."><?= escape($user['bio']) ?></textarea>
+                    <label>Age</label>
+                    <input type="number" name="age" value="<?= $user['age'] ?>">
+                    <label>Gender</label>
+                    <select name="gender">
+                        <option value="male" <?= $user['gender'] == 'male' ? 'selected' : '' ?>>Male</option>
+                        <option value="female" <?= $user['gender'] == 'female' ? 'selected' : '' ?>>Female</option>
+                        <option value="other" <?= $user['gender'] == 'other' ? 'selected' : '' ?>>Other</option>
+                    </select>
+                    <label class="checkbox-label">
+                        <input type="checkbox" name="is_private" value="1" <?= $user['is_private'] ? 'checked' : '' ?>>
+                        <span>Private account (hidden from explore)</span>
+                    </label>
+                    <button type="submit" class="save-btn"><i class="fas fa-save"></i> Save Changes</button>
+                </form>
+                <div style="margin-top: 14px; font-size: 12px; text-align: center;">
+                    <?= $user['is_private'] ? '🔒 Private Account' : '🌍 Public Account' ?>
+                </div>
+                <a href="logout.php" class="logout-btn"><i class="fas fa-sign-out-alt"></i> Logout</a>
+            </div>
+            <?php endif; ?>
+
+        </div><!-- end main-content -->
+
+        <!-- BOTTOM NAV — always last in flex column = always at bottom -->
+        <div class="bottom-nav" id="bottomNav">
+            <a href="?tab=messages" class="nav-item <?= $active_tab == 'messages' ? 'active' : '' ?>" id="messagesTab">
+                <i class="fas fa-comment-dots"></i>
+                <span class="nav-label">Chats</span>
+                <?php if ($notifications['unread_messages'] > 0): ?>
+                <span class="nav-badge" id="messageTabBadge"><?= $notifications['unread_messages'] > 99 ? '99+' : $notifications['unread_messages'] ?></span>
+                <?php endif; ?>
+            </a>
+            <a href="?tab=explore" class="nav-item <?= $active_tab == 'explore' ? 'active' : '' ?>">
+                <i class="fas fa-compass"></i>
+                <span class="nav-label">Explore</span>
+            </a>
+            <a href="?tab=feed" class="nav-item <?= $active_tab == 'feed' ? 'active' : '' ?>">
+                <i class="fas fa-newspaper"></i>
+                <span class="nav-label">Feed</span>
+            </a>
+            <a href="?tab=profile" class="nav-item <?= $active_tab == 'profile' ? 'active' : '' ?>">
+                <i class="fas fa-user-circle"></i>
+                <span class="nav-label">Profile</span>
+            </a>
+        </div>
+
+    </div><!-- end app-container -->
+<script src="/register-sw.js"></script>
+    <script>
+    // Global variables
+    let currentChatUser = null;
+    let currentChatUserName = null;
+    let lastMessageId = 0;
+    let typingTimeout = null;
+    let typingPollInterval = null;
+    let isLoadingExplore = false;
+    let isLoadingFeed = false;
+    let exploreOffset = 0;
+    let feedOffset = 0;
+    let currentSearchQuery = '';
+    let pendingMessage = false;
+    let isTypingCurrently = false;
+
+    const CSRF_TOKEN = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content');
+
+    // ========== NAV VISIBILITY ==========
+    function hideNav() {
+        $('#bottomNav').addClass('hidden');
+        $('#topBar').hide();
+        // Make main-content fill all remaining space for chat
+        $('#mainContent').css('overflow', 'hidden');
+    }
+
+    function showNav() {
+        $('#bottomNav').removeClass('hidden');
+        $('#topBar').show();
+        $('#mainContent').css('overflow-y', 'auto');
+    }
+
+    // ========== TYPING INDICATOR ==========
+    function startTypingPolling() {
+        if (typingPollInterval) clearInterval(typingPollInterval);
+        typingPollInterval = setInterval(() => {
+            if (currentChatUser) checkTypingStatus();
+        }, 1500);
+    }
+
+    function stopTypingPolling() {
+        if (typingPollInterval) clearInterval(typingPollInterval);
+        hideTypingIndicator();
+    }
+
+    function checkTypingStatus() {
+        if (!currentChatUser) return;
+        $.get(`api/check_typing.php?from_user=${currentChatUser}`, function(data) {
+            if (data.success && data.is_typing) showTypingIndicator();
+            else hideTypingIndicator();
+        });
+    }
+
+    function showTypingIndicator() {
+        if (!isTypingCurrently) { isTypingCurrently = true; $('#typingStatus').addClass('active'); }
+    }
+
+    function hideTypingIndicator() {
+        if (isTypingCurrently) { isTypingCurrently = false; $('#typingStatus').removeClass('active'); }
+    }
+
+    function sendTypingStatus() {
+        if (!currentChatUser) return;
+        if (typingTimeout) clearTimeout(typingTimeout);
+        $.get(`api/typing.php?to_user=${currentChatUser}&typing=1`);
+        typingTimeout = setTimeout(() => {
+            $.get(`api/typing.php?to_user=${currentChatUser}&typing=0`);
+        }, 2000);
+    }
+
+    // ========== NOTIFICATIONS ==========
+    function loadNotifications() {
+        $.get('api/get_notifications.php', function(data) {
+            if (data.success) {
+                displayNotifications(data);
+                updateNotificationCounts(data.counts);
+            }
+        });
+    }
+
+    function displayNotifications(data) {
+        const notifications = data.notifications;
+        let html = '';
+        const hasFriendRequests = notifications.friend_requests && notifications.friend_requests.length > 0;
+        const hasMessages = notifications.unread_messages && notifications.unread_messages.length > 0;
+
+        if (!hasFriendRequests && !hasMessages) {
+            html = '<div class="notif-empty"><i class="fas fa-bell-slash"></i>No new notifications</div>';
+        } else {
+            if (hasFriendRequests) {
+                html += '<div class="notif-section"><i class="fas fa-user-plus"></i> FRIEND REQUESTS</div>';
+                notifications.friend_requests.forEach(req => {
+                    html += `<div class="notif-item" id="friend-request-${req.id}">
+                        <div class="notif-title"><i class="fas fa-user"></i> ${escapeHtml(req.full_name)}</div>
+                        <div class="friend-actions">
+                            <button class="accept-btn" onclick="event.stopPropagation(); acceptFriendRequest(${req.id})">Accept</button>
+                            <button class="decline-btn" onclick="event.stopPropagation(); declineFriendRequest(${req.id})">Decline</button>
+                        </div>
+                    </div>`;
+                });
+            }
+            if (hasMessages) {
+                html += '<div class="notif-section"><i class="fas fa-comment"></i> NEW MESSAGES</div>';
+                notifications.unread_messages.forEach(msg => {
+                    html += `<div class="notif-item unread" onclick="openChatFromNotification(${msg.sender_id}, '${escapeHtml(msg.sender_name).replace(/'/g, "\\'")}')">
+                        <div class="notif-title"><i class="fas fa-envelope"></i> ${escapeHtml(msg.sender_name)}</div>
+                        <div class="notif-preview">${escapeHtml(msg.message_preview)}</div>
+                        <div class="notif-time">${msg.time_ago}</div>
+                    </div>`;
+                });
+            }
+        }
+        $('#notificationList').html(html);
+    }
+
+    function updateNotificationCounts(counts) {
+        const total = counts.friend_requests + counts.unread_messages;
+        const badge = $('#notificationBadge');
+        const messageTabBadge = $('#messageTabBadge');
+
+        if (total > 0) {
+            badge.css('display', 'flex').html(total > 99 ? '99+' : total);
+        } else {
+            badge.hide();
+        }
+
+        if (counts.unread_messages > 0) {
+            if (messageTabBadge.length) {
+                messageTabBadge.html(counts.unread_messages > 99 ? '99+' : counts.unread_messages).show();
+            }
+        } else if (messageTabBadge.length) {
+            messageTabBadge.remove();
+        }
+    }
+
+    function acceptFriendRequest(userId) {
+        if (!CSRF_TOKEN) return;
+        $.post('api/accept_friend.php', { friend_id: userId, csrf_token: CSRF_TOKEN }, function(res) {
+            if (res.success) {
+                $(`#friend-request-${userId}`).remove();
+                alert('Friend request accepted!');
+                loadNotifications();
+                loadConversations();
+            }
+        }, 'json');
+    }
+
+    function declineFriendRequest(userId) {
+        if (!CSRF_TOKEN) return;
+        $.post('api/decline_friend.php', { friend_id: userId, csrf_token: CSRF_TOKEN }, function(res) {
+            if (res.success) {
+                $(`#friend-request-${userId}`).remove();
+                alert('Friend request declined');
+                loadNotifications();
+            }
+        }, 'json');
+    }
+
+    function openChatFromNotification(userId, userName) {
+        $('#notificationDropdown').removeClass('show');
+        sessionStorage.setItem('openChatUserId', userId);
+        sessionStorage.setItem('openChatUserName', userName);
+        window.location.href = '?tab=messages';
+    }
+
+    // ========== PROFILE MODAL ==========
+    function showProfileModal(userId) {
+        $.get(`api/get_user_profile.php?user_id=${userId}`, function(data) {
+            if (data.success) {
+                const user = data.user;
+                const friendStatus = data.friend_status;
+                const isOwnProfile = data.is_own_profile;
+
+                $('#modalAvatar').html(user.avatar);
+                $('#modalName').text(user.full_name);
+                $('#modalStatus').html(user.is_online ? '🟢 Online' : '⚫ ' + user.last_active);
+
+                $('#modalStats').html(`
+                    <div class="stat-item"><span class="stat-number">${user.post_count}</span><span class="stat-label">Posts</span></div>
+                    <div class="stat-item"><span class="stat-number">${user.friend_count}</span><span class="stat-label">Friends</span></div>
+                    <div class="stat-item"><span class="stat-number">${user.mutual_friends}</span><span class="stat-label">Mutual</span></div>
+                `);
+
+                $('#modalInfo').html(`
+                    <div class="info-row"><div class="info-icon"><i class="fas fa-calendar"></i></div><div class="info-label">Age</div><div class="info-value">${user.age}</div></div>
+                    <div class="info-row"><div class="info-icon"><i class="fas fa-venus-mars"></i></div><div class="info-label">Gender</div><div class="info-value">${user.gender}</div></div>
+                    <div class="info-row"><div class="info-icon"><i class="fas fa-calendar-alt"></i></div><div class="info-label">Joined</div><div class="info-value">${user.member_since}</div></div>
+                `);
+
+                $('#modalBio').html(`<strong><i class="fas fa-quote-left"></i> About</strong><p>${user.bio}</p>`);
+
+                let actionsHtml = '';
+                if (!isOwnProfile) {
+                    if (friendStatus === 'none') {
+                        actionsHtml = `<button class="modal-btn primary" onclick="addFriendFromModal(${user.id})">Add Friend</button>
+                                       <button class="modal-btn secondary" onclick="messageFromModal(${user.id}, '${escapeHtml(user.full_name).replace(/'/g, "\\'")}')">Message</button>`;
+                    } else if (friendStatus === 'pending') {
+                        actionsHtml = `<button class="modal-btn disabled" disabled>Request Pending</button>
+                                       <button class="modal-btn secondary" onclick="messageFromModal(${user.id}, '${escapeHtml(user.full_name).replace(/'/g, "\\'")}')">Message</button>`;
+                    } else {
+                        actionsHtml = `<button class="modal-btn disabled" disabled>Friends</button>
+                                       <button class="modal-btn secondary" onclick="messageFromModal(${user.id}, '${escapeHtml(user.full_name).replace(/'/g, "\\'")}')">Message</button>`;
+                    }
+                } else {
+                    actionsHtml = `<button class="modal-btn disabled" style="width:100%;">This is you</button>`;
+                }
+                $('#modalActions').html(actionsHtml);
+                $('#profileModal').addClass('show');
+            }
+        });
+    }
+
+    function closeProfileModal() { $('#profileModal').removeClass('show'); }
+    function addFriendFromModal(userId) { addFriend(userId); setTimeout(() => closeProfileModal(), 1000); }
+    function messageFromModal(userId, userName) {
+        closeProfileModal();
+        sessionStorage.setItem('openChatUserId', userId);
+        sessionStorage.setItem('openChatUserName', userName);
+        window.location.href = '?tab=messages';
+    }
+    function viewProfileFromChat() { if (currentChatUser) showProfileModal(currentChatUser); }
+    $(document).on('click', function(e) { if ($(e.target).is('#profileModal')) closeProfileModal(); });
+
+    // ========== MESSAGES ==========
+    function loadConversations() {
+        $.get('api/get_conversations.php', function(convs) {
+            if (convs.error) { $('#conversations-list').html('<div class="empty-state">Error loading conversations</div>'); return; }
+            let html = '';
+            if (convs.length === 0) {
+                html = '<div class="empty-state"><i class="fas fa-comments"></i><p>No conversations yet</p><small>Go to Explore to start chatting!</small></div>';
+            } else {
+                convs.forEach(c => {
+                    const unreadBadge = (c.unread_count > 0) ? `<span class="unread-count">${c.unread_count > 99 ? '99+' : c.unread_count}</span>` : '';
+                    html += `<div class="chat-item" onclick="openChat(${c.other_user_id}, '${escapeHtml(c.full_name).replace(/'/g, "\\'")}')">
+                        <div class="chat-avatar">${c.avatar}</div>
+                        <div class="chat-info">
+                            <div class="chat-name">${escapeHtml(c.full_name)} ${c.is_online ? '<span class="online-dot"></span>' : ''}</div>
+                            <div class="chat-preview">${escapeHtml(c.last_message || 'Start a conversation')}</div>
+                            <div class="chat-time">${c.last_active_text}</div>
+                        </div>
+                        ${unreadBadge}
+                    </div>`;
+                });
+            }
+            $('#conversations-list').html(html);
+        });
+    }
+
+    function openChat(userId, userName) {
+        if (currentChatUser === userId) return;
+
+        currentChatUser = userId;
+        currentChatUserName = userName;
+        lastMessageId = 0;
+
+        // Hide nav, top bar; show chat full-screen
+        hideNav();
+
+        $('#conversations-view').hide();
+        $('#chat-view').show().css('display', 'flex');
+
+        $('#chat-user-name').text(userName);
+        $('#chat-messages').empty();
+        hideTypingIndicator();
+
+        if (window.chatInterval) clearInterval(window.chatInterval);
+        loadMessages(true);
+        window.chatInterval = setInterval(() => {
+            if (currentChatUser) loadMessages(false);
+        }, 3000);
+
+        startTypingPolling();
+
+        $.post('api/mark_messages_read.php', { user_id: userId, csrf_token: CSRF_TOKEN });
+        loadNotifications();
+    }
+
+    function loadMessages(reset = false) {
+        if (!currentChatUser) return;
+        if (reset) { lastMessageId = 0; $('#chat-messages').empty(); }
+        $.get(`api/get_messages.php?user_id=${currentChatUser}&last_id=${lastMessageId}`, function(data) {
+            if (data.messages && data.messages.length) {
+                data.messages.forEach(msg => {
+                    if (msg.id > lastMessageId) {
+                        appendMessage(msg);
+                        lastMessageId = Math.max(lastMessageId, msg.id);
+                    }
+                });
+                scrollToBottom();
+            }
+            if (data.is_typing) showTypingIndicator();
+            else hideTypingIndicator();
+            if (data.other_user_online !== undefined) {
+                $('#chat-user-status').html(data.other_user_online ? '<span style="color:#22c55e;">● Online</span>' : `Last seen ${data.last_active}`);
+            }
+        });
+    }
+
+    function appendMessage(msg) {
+        const isMine = msg.is_mine;
+
+        // Build read receipt for sent messages only
+        let receiptHtml = '';
+        if (isMine) {
+            if (msg.is_read) {
+                // Double blue checks = seen
+                receiptHtml = `<span class="read-receipt seen" title="Seen">
+                    <span class="check">✓</span><span class="check">✓</span>
+                </span>`;
+            } else {
+                // Single grey check = delivered/not seen
+                receiptHtml = `<span class="read-receipt sent-only" title="Sent">
+                    <span class="check">✓</span>
+                </span>`;
+            }
+        }
+
+        const html = `<div class="message ${isMine ? 'sent' : 'received'}">
+            <div class="message-bubble">
+                ${escapeHtmlPreserveEmoji(msg.message)}
+                <div class="message-meta">
+                    <span class="message-time">${msg.time}</span>
+                    ${receiptHtml}
+                </div>
+            </div>
+        </div>`;
+        $('#chat-messages').append(html);
+    }
+
+    function sendMessage() {
+        const msg = $('#messageInput').val();
+        if (!msg.trim() || !currentChatUser || pendingMessage) return;
+        if (!CSRF_TOKEN) { alert('Refresh page'); return; }
+        pendingMessage = true;
+        const messageToSend = msg;
+        $('#messageInput').val('');
+        $.get(`api/typing.php?to_user=${currentChatUser}&typing=0`);
+        $.ajax({
+            url: 'api/send_message.php',
+            type: 'POST',
+            data: { to_user_id: currentChatUser, message: messageToSend, csrf_token: CSRF_TOKEN },
+            dataType: 'json',
+            success: function(res) {
+                if (res.success) loadMessages(true);
+                else { alert(res.error); $('#messageInput').val(messageToSend); }
+            },
+            error: function() { alert('Failed to send'); $('#messageInput').val(messageToSend); },
+            complete: function() { pendingMessage = false; }
+        });
+    }
+
+    function onMessageInput() { if (currentChatUser) sendTypingStatus(); }
+
+    function closeChat() {
+        currentChatUser = null;
+        if (window.chatInterval) clearInterval(window.chatInterval);
+        stopTypingPolling();
+        $('#chat-view').hide();
+        $('#conversations-view').show();
+        // Restore nav and top bar
+        showNav();
+        loadConversations();
+        loadNotifications();
+    }
+
+    function scrollToBottom() {
+        const area = $('#chat-messages')[0];
+        if (area) area.scrollTop = area.scrollHeight;
+    }
+
+    // ========== EXPLORE ==========
+    function loadExplore(reset = false) {
+        if (reset) { exploreOffset = 0; $('#exploreGrid').empty(); }
+        if (isLoadingExplore) return;
+        isLoadingExplore = true;
+        $('#exploreLoader').text('Loading...');
+        let url = `api/explore_users.php?offset=${exploreOffset}`;
+        if (currentSearchQuery) url += `&search=${encodeURIComponent(currentSearchQuery)}`;
+        $.get(url, function(users) {
+            if (users.error) { $('#exploreGrid').html('<div class="empty-state">Error loading users</div>'); isLoadingExplore = false; return; }
+            if (users.length === 0 && exploreOffset === 0) {
+                $('#exploreGrid').html('<div class="empty-state"><i class="fas fa-users"></i><p>No public users found</p></div>');
+            } else if (users.length > 0) {
+                users.forEach(u => {
+                    let actionButton = '';
+                    if (u.friend_status === 'none') actionButton = `<button class="add-btn" onclick="event.stopPropagation(); addFriend(${u.id})">Add</button>`;
+                    else if (u.friend_status === 'pending') actionButton = `<button class="pending-btn" disabled>Pending</button>`;
+                    else actionButton = `<button class="pending-btn" disabled>Friends</button>`;
+                    $('#exploreGrid').append(`<div class="explore-card" onclick="showProfileModal(${u.id})">
+                        <div class="explore-avatar">${u.avatar}</div>
+                        <div class="explore-name">${escapeHtml(u.full_name)}</div>
+                        <div class="explore-age">${u.age || '?'} years</div>
+                        <div class="explore-bio">${escapeHtml(u.bio)}</div>
+                        <div class="explore-actions">
+                            <button class="msg-btn" onclick="event.stopPropagation(); openChatFromExplore(${u.id}, '${escapeHtml(u.full_name_raw).replace(/'/g, "\\'")}')">Message</button>
+                            ${actionButton}
+                        </div>
+                    </div>`);
+                });
+                exploreOffset += 20;
+                $('#exploreLoader').text('Scroll for more');
+            } else {
+                $('#exploreLoader').text('No more users');
+            }
+            isLoadingExplore = false;
+        });
+    }
+
+    function searchUsers() { currentSearchQuery = $('#searchInput').val(); loadExplore(true); }
+    function addFriend(userId) {
+        if (!CSRF_TOKEN) return;
+        $.post('api/send_friend_request.php', { friend_id: userId, csrf_token: CSRF_TOKEN }, function(res) {
+            if (res.success) { alert('Friend request sent!'); loadExplore(true); }
+            else alert(res.error);
+        }, 'json');
+    }
+    function openChatFromExplore(userId, userName) {
+        sessionStorage.setItem('openChatUserId', userId);
+        sessionStorage.setItem('openChatUserName', userName);
+        window.location.href = '?tab=messages';
+    }
+
+    // ========== FEED ==========
+    function loadFeed(reset = false) {
+        if (reset) { feedOffset = 0; $('#feedContainer').empty(); }
+        if (isLoadingFeed) return;
+        isLoadingFeed = true;
+        $('#feedLoader').text('Loading...');
+        $.get(`api/get_feed.php?offset=${feedOffset}`, function(posts) {
+            if (posts.error) { $('#feedContainer').html('<div class="empty-state">Error loading feed</div>'); isLoadingFeed = false; return; }
+            if (posts.length === 0 && feedOffset === 0) {
+                $('#feedContainer').html('<div class="empty-state"><i class="fas fa-newspaper"></i><p>No posts yet</p><small>Create your first post!</small></div>');
+            } else if (posts.length > 0) {
+                posts.forEach(post => {
+                    const reactionBtn = post.my_reaction
+                        ? `<button class="reaction-btn active" onclick="addReaction(${post.id}, '${post.my_reaction}')">❤️ ${post.reaction_count}</button>`
+                        : `<button class="reaction-btn" onclick="addReaction(${post.id}, 'like')">❤️ ${post.reaction_count}</button>`;
+                    let commentsHtml = '';
+                    let hiddenCommentsHtml = '';
+                    let totalComments = post.comments ? post.comments.length : 0;
+                    if (post.comments && post.comments.length > 0) {
+                        post.comments.slice(0, 2).forEach(c => {
+                            commentsHtml += `<div class="comment"><strong>${escapeHtml(c.full_name)}</strong> ${escapeHtmlPreserveEmoji(c.content)}<span class="comment-time">${c.time_ago || 'now'}</span></div>`;
+                        });
+                        if (totalComments > 2) {
+                            post.comments.slice(2).forEach(c => {
+                                hiddenCommentsHtml += `<div class="comment hidden-comment"><strong>${escapeHtml(c.full_name)}</strong> ${escapeHtmlPreserveEmoji(c.content)}<span class="comment-time">${c.time_ago || 'now'}</span></div>`;
+                            });
+                        }
+                    }
+                    const viewAllBtn = totalComments > 2 ? `<button class="view-all-comments" onclick="toggleAllComments(${post.id})">View all ${totalComments} comments <i class="fas fa-chevron-down"></i></button>` : '';
+                    $('#feedContainer').append(`<div class="feed-post">
+                        <div class="post-header">
+                            <div class="post-avatar">${post.avatar}</div>
+                            <div><div class="post-author">${escapeHtml(post.full_name)}</div><div class="post-time">${post.time_ago}</div></div>
+                        </div>
+                        <div class="post-content">${escapeHtmlPreserveEmoji(post.content)}</div>
+                        <div class="post-actions">${reactionBtn}<button class="comment-btn" onclick="toggleCommentBox(${post.id})">💬 ${post.comment_count}</button></div>
+                        <div class="comments-section" id="comments-${post.id}">
+                            <div class="visible-comments">${commentsHtml}</div>
+                            <div class="hidden-comments" id="hidden-comments-${post.id}" style="display:none;">${hiddenCommentsHtml}</div>
+                            ${viewAllBtn}
+                        </div>
+                        <div class="comment-input-box" id="comment-input-${post.id}" style="display:none;">
+                            <input type="text" id="comment-text-${post.id}" placeholder="Write a comment..." class="comment-input">
+                            <button onclick="addComment(${post.id})" class="comment-submit">Post</button>
+                        </div>
+                    </div>`);
+                });
+                feedOffset += 10;
+                $('#feedLoader').text('Scroll for more');
+            } else {
+                $('#feedLoader').text('No more posts');
+            }
+            isLoadingFeed = false;
+        });
+    }
+
+    function toggleAllComments(postId) {
+        const hidden = $(`#hidden-comments-${postId}`);
+        if (hidden.is(':visible')) {
+            hidden.hide();
+        } else {
+            hidden.show();
+        }
+    }
+
+    function createPost() {
+        const content = $('#newPost').val();
+        if (!content.trim()) { alert('Write something'); return; }
+        if (!CSRF_TOKEN) return;
+        const btn = $('#postBtn');
+        btn.prop('disabled', true).text('Posting...');
+        $.ajax({
+            url: 'api/create_post.php',
+            type: 'POST',
+            data: JSON.stringify({ content: content, csrf_token: CSRF_TOKEN }),
+            contentType: 'application/json',
+            success: function(res) {
+                if (res.success) { $('#newPost').val(''); loadFeed(true); }
+                else alert(res.error);
+            },
+            complete: function() { btn.prop('disabled', false).html('<i class="fas fa-feather-alt"></i> Share Post'); }
+        });
+    }
+
+    function addReaction(postId, type) {
+        if (!CSRF_TOKEN) return;
+        $.ajax({
+            url: 'api/add_reaction.php',
+            type: 'POST',
+            data: JSON.stringify({ post_id: postId, type: type, csrf_token: CSRF_TOKEN }),
+            contentType: 'application/json',
+            success: function(res) { if (res.success) loadFeed(true); }
+        });
+    }
+
+    function addComment(postId) {
+        const content = $(`#comment-text-${postId}`).val();
+        if (!content.trim()) return;
+        if (!CSRF_TOKEN) return;
+        $.ajax({
+            url: 'api/add_comment.php',
+            type: 'POST',
+            data: JSON.stringify({ post_id: postId, content: content, csrf_token: CSRF_TOKEN }),
+            contentType: 'application/json',
+            success: function(res) {
+                if (res.success) { $(`#comment-text-${postId}`).val(''); loadFeed(true); }
+            }
+        });
+    }
+
+    function toggleCommentBox(postId) { $(`#comment-input-${postId}`).toggle(); }
+
+    // ========== UTILITIES ==========
+    function escapeHtmlPreserveEmoji(text) {
+        if (!text) return '';
+        const txt = document.createElement('textarea');
+        txt.innerHTML = text;
+        let decoded = txt.value;
+        return String(decoded)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+    }
+
+    function escapeHtml(text) {
+        if (!text) return '';
+        return String(text)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+    }
+
+    // ========== INFINITE SCROLL ==========
+    $('#mainContent').on('scroll', function() {
+        const el = this;
+        const nearBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 200;
+        if (!nearBottom) return;
+        const tab = new URLSearchParams(window.location.search).get('tab') || 'messages';
+        if (tab === 'explore') loadExplore();
+        else if (tab === 'feed') loadFeed();
+    });
+
+    // ========== INIT ==========
+    $(document).ready(function() {
+        // Notification bell
+        $('#notificationBtn').on('click', function(e) {
+            e.stopPropagation();
+            $('#notificationDropdown').toggleClass('show');
+            if ($('#notificationDropdown').hasClass('show')) loadNotifications();
+        });
+        $(document).on('click', function(e) {
+            if (!$(e.target).closest('#notificationBtn, #notificationDropdown').length) {
+                $('#notificationDropdown').removeClass('show');
+            }
+        });
+
+        // Auto-open chat from session storage
+        const openUserId = sessionStorage.getItem('openChatUserId');
+        const openUserName = sessionStorage.getItem('openChatUserName');
+        if (openUserId && openUserName) {
+            sessionStorage.removeItem('openChatUserId');
+            sessionStorage.removeItem('openChatUserName');
+            setTimeout(() => openChat(parseInt(openUserId), openUserName), 400);
+        }
+
+        // Tab init
+        const tab = new URLSearchParams(window.location.search).get('tab') || 'messages';
+        if (tab === 'messages') loadConversations();
+        else if (tab === 'explore') loadExplore();
+        else if (tab === 'feed') {
+            loadFeed();
+            $('#postBtn').off('click').on('click', createPost);
+        } else if (tab === 'profile') {
+            $('#profileForm').off('submit').on('submit', function(e) {
+                e.preventDefault();
+                $.post('api/update_profile.php', $(this).serialize(), function(res) {
+                    if (res.success) { alert('Profile updated!'); location.reload(); }
+                    else alert(res.error);
+                }, 'json');
+            });
+        }
+
+        // Message send
+        $('#sendMsgBtn').off('click').on('click', sendMessage);
+        $('#messageInput').off('keypress').on('keypress', function(e) {
+            if (e.which === 13 && !e.shiftKey) { e.preventDefault(); sendMessage(); }
+            else if (currentChatUser) onMessageInput();
+        });
+        $('#messageInput').off('input').on('input', function() {
+            if (currentChatUser) onMessageInput();
+        });
+
+        // Periodic updates
+        setInterval(() => $.post('api/update_online.php'), 30000);
+        setInterval(() => {
+            if ($('#notificationDropdown').hasClass('show')) loadNotifications();
+            else $.get('api/get_notification_counts.php', function(data) {
+                if (data.success) updateNotificationCounts(data.counts);
+            });
+        }, 10000);
+    });
+    </script>
+</body>
+</html>
