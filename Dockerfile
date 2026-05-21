@@ -1,7 +1,7 @@
 FROM php:8.2-apache
 
-# Set Apache document root to your public folder
-ENV APACHE_DOCUMENT_ROOT /var/www/html/public
+# Set Apache document root to the root directory (where index.php is)
+ENV APACHE_DOCUMENT_ROOT /var/www/html
 
 # Update Apache configuration
 RUN sed -ri -e 's!/var/www/html!${APACHE_DOCUMENT_ROOT}!g' /etc/apache2/sites-available/*.conf \
