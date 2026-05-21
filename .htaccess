@@ -1,0 +1,17 @@
+# Protect .env file from being accessed directly
+<Files .env>
+    Order allow,deny
+    Deny from all
+</Files>
+
+# Protect sensitive directories
+<FilesMatch "\.(sql|log|ini)$">
+    Order allow,deny
+    Deny from all
+</FilesMatch>
+
+# Enable rewrite engine
+RewriteEngine On
+
+# Prevent directory listing
+Options -Indexes
